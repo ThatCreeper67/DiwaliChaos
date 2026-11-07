@@ -1,0 +1,17 @@
+{
+  "name": "diwali-chaos",
+  "version": "1.0.0",
+  "description": "Diwali Chaos - A humorous 2D stealth-adventure and arcade boss fight game set in an Indian society during Diwali",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "phaser": "^3.88.2"
+  },
+  "devDependencies": {
+    "vite": "^6.2.0"
+  }
+}
