@@ -1,5 +1,7 @@
 # 🪔 Diwali Chaos — Operation Phooljhadi
 
+https://diwali-chaos.vercel.app/
+
 A humorous, story-driven 2D stealth-adventure and arcade boss-fight browser game set in an Indian residential neighbourhood during Diwali.
 
 Built with **Phaser 3**, **Vite**, **HTML5 Canvas**, and the **Web Audio API**.
