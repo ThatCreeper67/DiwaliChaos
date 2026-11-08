@@ -1,4 +1,4 @@
-// BazaarScene.js - Level 1: Bazaar Escape
+// BazaarScene.js - Level 1: Bazaar Escape (Data-Driven via MapLoader)
 import { Player } from '../entities/Player.js';
 import { Father } from '../entities/Father.js';
 import { HUD } from '../ui/HUD.js';
@@ -7,6 +7,8 @@ import { soundManager } from '../systems/SoundSystem.js';
 import { SaveManager } from '../systems/SaveManager.js';
 import { globalTimer } from '../systems/TimerManager.js';
 import { inventory } from '../systems/InventoryManager.js';
+import { MapLoader } from '../maps/MapLoader.js';
+import { BazaarMapData } from '../maps/data/BazaarMapData.js';
 
 export class BazaarScene extends Phaser.Scene {
   constructor() {
@@ -14,42 +16,56 @@ export class BazaarScene extends Phaser.Scene {
   }
 
   create() {
-    const mapWidth = 1200;
-    const mapHeight = 800;
-
-    this.physics.world.setBounds(0, 0, mapWidth, mapHeight);
-    this.cameras.main.setBounds(0, 0, mapWidth, mapHeight);
-
-    // Audio
     soundManager.playMusic('bazaar');
 
-    // Groups
-    this.obstacles = this.physics.add.staticGroup();
-    this.interactables = [];
+    // 1. Load Data-Driven Map
+    const loader = new MapLoader(this);
+    this.mapInstance = loader.loadMap(BazaarMapData);
+    this.obstacles = this.mapInstance.collisionGroup;
+    this.interactables = this.mapInstance.interactables;
 
-    // Build bazaar environment
-    this.buildMap(mapWidth, mapHeight);
+    // References to dynamic objects
+    this.exitBlocker = this.mapInstance.namedObjects.get('exit_blocker');
+    this.exitGateVisual = this.mapInstance.namedObjects.get('exit_gate_visual');
+    this.serviceLaneRevealed = false;
 
-    // Spawn Player
-    this.player = new Player(this, 120, 680);
+    // 2. Spawn Player
+    const spawn = this.mapInstance.playerSpawn;
+    this.player = new Player(this, spawn.x, spawn.y);
     this.cameras.main.startFollow(this.player, true, 0.08, 0.08);
 
-    // Collisions
     this.physics.add.collider(this.player, this.obstacles);
 
-    // Spawn Father AI with patrol route around central market plazas
-    const patrolPoints = [
-      { x: 380, y: 350 },
-      { x: 720, y: 350 },
-      { x: 720, y: 620 },
-      { x: 420, y: 620 },
-      { x: 420, y: 480 },
-      { x: 260, y: 480 }
-    ];
-    this.father = new Father(this, 380, 350, patrolPoints);
+    // 3. Spawn Father AI from Map Data
+    const fatherConfig = this.mapInstance.npcConfigs.find(n => n.type === 'Father') || {
+      spawn: { x: 380, y: 350 },
+      patrolWaypoints: [
+        { x: 380, y: 350 },
+        { x: 720, y: 350 },
+        { x: 720, y: 620 },
+        { x: 420, y: 620 },
+        { x: 420, y: 480 },
+        { x: 260, y: 480 }
+      ]
+    };
+    this.father = new Father(this, fatherConfig.spawn.x, fatherConfig.spawn.y, fatherConfig.patrolWaypoints);
     this.physics.add.collider(this.father, this.obstacles);
 
-    // HUD & Dialogue Manager
+    // 4. Collectibles
+    this.mapInstance.collectibleSprites.forEach(item => {
+      this.physics.add.overlap(this.player, item, () => {
+        soundManager.playLaddooPickup();
+        inventory.addLaddoo(item.collectibleCount || 1);
+        this.hud.showPopupMessage(`+${item.collectibleCount || 1} LADDOO!`, '#ffd700');
+        this.hud.updateHUD();
+        item.destroy();
+      });
+    });
+
+    // 5. Setup Shopkeeper NPC (Ramesh Kaka)
+    this.setupShopkeeper();
+
+    // 6. HUD & Dialogue Manager
     this.hud = new HUD(this);
     this.hud.setObjective('Escape Bazaar without getting spotted by Father');
     this.dialogue = new DialogueManager(this);
@@ -59,10 +75,6 @@ export class BazaarScene extends Phaser.Scene {
       this.hud.showPopupMessage('WARNING: Do not get in the sight of your Father!', '#ff5252', 3500);
     });
 
-    // Helpful shopkeeper (Ramesh Kaka)
-    this.serviceLaneRevealed = false;
-    this.setupShopkeeper();
-
     // Interaction handler for 'E' key
     this.input.keyboard.on('keydown-E', () => {
       if (!this.dialogue.isActive()) {
@@ -71,114 +83,11 @@ export class BazaarScene extends Phaser.Scene {
     });
   }
 
-  buildMap(width, height) {
-    // 1. Cobblestone Ground Tiles
-    for (let x = 0; x < width; x += 32) {
-      for (let y = 0; y < height; y += 32) {
-        this.add.image(x + 16, y + 16, 'tile_bazaar_ground');
-      }
-    }
-
-    // 2. Perimeter Boundary Walls (Brick)
-    for (let x = 0; x < width; x += 32) {
-      // Top wall
-      this.createWall(x + 16, 16);
-      // Bottom wall
-      this.createWall(x + 16, height - 16);
-    }
-    for (let y = 32; y < height - 32; y += 32) {
-      // Left wall
-      this.createWall(16, y + 16);
-      // Right wall (leave a gap for secret service lane at x: width - 16, y: 160-260)
-      if (y < 160 || y > 260) {
-        this.createWall(width - 16, y + 16);
-      }
-    }
-
-    // Secret Service Lane exit gate (initially blocked by crates/shutter)
-    this.exitBlocker = this.obstacles.create(width - 16, 210, 'tile_wall_brick').refreshBody();
-    this.exitGateVisual = this.add.image(width - 40, 210, 'obj_exit_service_lane').setVisible(false);
-
-    // 3. Stalls and Market Layout (Cover obstacles for sneaking)
-    // Sweet Stall (Ramesh Kaka's Shop)
-    this.shopStall = this.createObstacle(920, 260, 'obj_stall', 60, 40);
-
-    // Decorative / Cover Stalls
-    this.createObstacle(320, 220, 'obj_stall', 60, 40);
-    this.createObstacle(620, 220, 'obj_stall', 60, 40);
-    this.createObstacle(540, 520, 'obj_stall', 60, 40);
-
-    // Scooters (cover)
-    this.createObstacle(220, 360, 'obj_scooter', 44, 30);
-    this.createObstacle(780, 500, 'obj_scooter', 44, 30);
-    this.createObstacle(440, 700, 'obj_scooter', 44, 30);
-
-    // Society Notice Board
-    this.createObstacle(160, 540, 'obj_notice_board', 36, 30);
-
-    // Decorative Rangoli and Diyas
-    this.add.image(480, 380, 'obj_rangoli').setDisplaySize(48, 48);
-    this.add.image(740, 640, 'obj_rangoli').setDisplaySize(48, 48);
-
-    // Hanging fairy light garlands across bazaar
-    for (let x = 80; x < width - 80; x += 64) {
-      this.add.image(x, 60, 'obj_fairy_lights').setDepth(20);
-    }
-
-    // Diyas lining the streets
-    const diyaPositions = [
-      { x: 100, y: 640 }, { x: 260, y: 640 }, { x: 620, y: 720 },
-      { x: 880, y: 640 }, { x: 380, y: 160 }, { x: 740, y: 160 }
-    ];
-    diyaPositions.forEach(pos => {
-      this.add.image(pos.x, pos.y, 'obj_diya').setDisplaySize(20, 20);
-    });
-
-    // Free Laddoos scattered in bazaar as taste-testers
-    this.createLaddooPickup(200, 200);
-    this.createLaddooPickup(850, 680);
-    this.createLaddooPickup(520, 380);
-  }
-
-  createWall(x, y) {
-    const wall = this.obstacles.create(x, y, 'tile_wall_brick');
-    wall.setImmovable(true);
-    wall.refreshBody();
-    return wall;
-  }
-
-  createObstacle(x, y, texture, bodyW, bodyH) {
-    const obs = this.obstacles.create(x, y, texture);
-    obs.body.setSize(bodyW, bodyH);
-    obs.setImmovable(true);
-    obs.refreshBody();
-    return obs;
-  }
-
-  createLaddooPickup(x, y) {
-    const laddoo = this.physics.add.image(x, y, 'item_laddoo').setDisplaySize(20, 20);
-    this.tweens.add({
-      targets: laddoo,
-      y: y - 4,
-      duration: 600,
-      yoyo: true,
-      repeat: -1
-    });
-
-    this.physics.add.overlap(this.player, laddoo, () => {
-      soundManager.playLaddooPickup();
-      inventory.addLaddoo(1);
-      this.hud.showPopupMessage('+1 LADDOO!', '#ffd700');
-      this.hud.updateHUD();
-      laddoo.destroy();
-    });
-  }
-
   setupShopkeeper() {
-    // NPC Ramesh Kaka standing by the stall at 960, 220
     this.shopkeeper = this.add.image(950, 220, 'shopkeeper').setDepth(30);
 
     this.interactables.push({
+      id: 'npc_ramesh_kaka',
       x: 950,
       y: 240,
       radius: 65,
@@ -222,26 +131,28 @@ export class BazaarScene extends Phaser.Scene {
     soundManager.playUnlockDoor();
 
     // Remove the blocking wall
-    if (this.exitBlocker) {
+    if (this.exitBlocker && this.exitBlocker.active) {
       this.exitBlocker.destroy();
       this.exitBlocker = null;
     }
 
     // Highlight exit lane
-    this.exitGateVisual.setVisible(true);
-    this.tweens.add({
-      targets: this.exitGateVisual,
-      alpha: 0.4,
-      duration: 400,
-      yoyo: true,
-      repeat: -1
-    });
+    if (this.exitGateVisual) {
+      this.exitGateVisual.setVisible(true);
+      this.tweens.add({
+        targets: this.exitGateVisual,
+        alpha: 0.4,
+        duration: 400,
+        yoyo: true,
+        repeat: -1
+      });
+    }
 
     this.hud.setObjective('Escape through the secret Service Lane on the right!');
     this.hud.showPopupMessage('SERVICE LANE UNLOCKED!', '#76ff03', 3000);
 
     // Setup exit trigger zone
-    const exitZone = this.add.zone(1180, 210, 40, 100);
+    const exitZone = this.add.zone(1190, 210, 50, 100);
     this.physics.add.existing(exitZone, true);
     this.physics.add.overlap(this.player, exitZone, () => {
       this.completeLevel();
@@ -251,7 +162,7 @@ export class BazaarScene extends Phaser.Scene {
   checkInteractions() {
     for (const item of this.interactables) {
       const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, item.x, item.y);
-      if (dist <= item.radius) {
+      if (dist <= item.radius && item.action) {
         item.action();
         return;
       }
@@ -269,7 +180,6 @@ export class BazaarScene extends Phaser.Scene {
         text: message
       }
     ], () => {
-      // Restart current level only (Timer continues uninterrupted!)
       this.scene.restart();
     });
   }

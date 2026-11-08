@@ -1,4 +1,4 @@
-// SocietyScene.js - Level 2: Society: Operation Laddoo Collection
+// SocietyScene.js - Level 2: Society: Operation Laddoo Collection (Data-Driven via MapLoader)
 import { Player } from '../entities/Player.js';
 import { HUD } from '../ui/HUD.js';
 import { DialogueManager } from '../systems/DialogueManager.js';
@@ -6,6 +6,8 @@ import { soundManager } from '../systems/SoundSystem.js';
 import { SaveManager } from '../systems/SaveManager.js';
 import { globalTimer } from '../systems/TimerManager.js';
 import { inventory } from '../systems/InventoryManager.js';
+import { MapLoader } from '../maps/MapLoader.js';
+import { SocietyMapData } from '../maps/data/SocietyMapData.js';
 
 export class SocietyScene extends Phaser.Scene {
   constructor() {
@@ -13,27 +15,80 @@ export class SocietyScene extends Phaser.Scene {
   }
 
   create() {
-    const mapWidth = 1400;
-    const mapHeight = 900;
-
-    this.physics.world.setBounds(0, 0, mapWidth, mapHeight);
-    this.cameras.main.setBounds(0, 0, mapWidth, mapHeight);
-
     soundManager.playMusic('society');
 
-    this.obstacles = this.physics.add.staticGroup();
-    this.interactables = [];
-    this.collectedSocietyLaddoos = 0;
+    // 1. Load Data-Driven Map
+    const loader = new MapLoader(this);
+    this.mapInstance = loader.loadMap(SocietyMapData);
+    this.obstacles = this.mapInstance.collisionGroup;
+    this.interactables = this.mapInstance.interactables;
     this.targetLaddoos = inventory.requiredSocietyLaddoos; // 10
 
-    this.buildMap(mapWidth, mapHeight);
+    // Reference to home door
+    this.homeDoor = this.mapInstance.namedObjects.get('home_door');
+    this.homeUnlocked = false;
 
-    // Spawn Player
-    this.player = new Player(this, 120, 450);
+    // 2. Spawn Player
+    const spawn = this.mapInstance.playerSpawn;
+    this.player = new Player(this, spawn.x, spawn.y);
     this.cameras.main.startFollow(this.player, true, 0.08, 0.08);
 
     this.physics.add.collider(this.player, this.obstacles);
 
+    // 3. Collectibles Handling
+    this.mapInstance.collectibleSprites.forEach(item => {
+      this.physics.add.overlap(this.player, item, () => {
+        soundManager.playLaddooPickup();
+        const amt = item.collectibleCount || 1;
+        inventory.addLaddoo(amt);
+        this.hud.showPopupMessage(`+${amt} ${item.collectibleType === 'laddoo_box' ? 'LADDOO BOX' : 'LADDOO'}!`, '#ffd700');
+        this.updateObjectiveText();
+        this.hud.updateHUD();
+        item.destroy();
+      });
+    });
+
+    // 4. Setup Aunties & Vendors
+    this.setupAuntyHouse(180, 230, 'aunty_pink', 'AUNTY VERMA', [
+      {
+        speaker: 'AUNTY VERMA',
+        portrait: 'portrait_player',
+        text: 'Arre Chintu beta! Happy Diwali! Yeh lo taaza Besan ke Laddoo khao!'
+      },
+      {
+        speaker: 'AUNTY VERMA',
+        portrait: 'portrait_player',
+        text: 'Beta, tumhare parents ko pata hai tum yahan akele ghoom rahe ho?'
+      },
+      {
+        speaker: 'CHINTU',
+        portrait: 'portrait_player',
+        text: 'Haan Aunty, society project ke liye survey kar raha hoon! Thank you!'
+      }
+    ], 3);
+
+    this.setupAuntyHouse(520, 230, 'aunty_cyan', 'AUNTY GUPTA', [
+      {
+        speaker: 'AUNTY GUPTA',
+        portrait: 'portrait_player',
+        text: 'Chintu! Sharma Ji subah se round laga rahe hain, keh rahe hain cracker bursting banned hai!'
+      },
+      {
+        speaker: 'AUNTY GUPTA',
+        portrait: 'portrait_player',
+        text: 'Society rules ke according, laddoo distribution requires permission... par tum mere favorite ho, yeh lo Motichoor!'
+      }
+    ], 3);
+
+    this.setupVendor(1150, 460, 'HALWAI VENDOR', [
+      {
+        speaker: 'SWEET VENDOR',
+        portrait: 'portrait_shopkeeper',
+        text: 'Shuddh Desi Ghee ke laddoos! 2 box tumhare liye beta!'
+      }
+    ], 2);
+
+    // 5. HUD & Dialogue Manager
     this.hud = new HUD(this);
     this.dialogue = new DialogueManager(this);
     this.updateObjectiveText();
@@ -61,155 +116,8 @@ export class SocietyScene extends Phaser.Scene {
     }
   }
 
-  buildMap(width, height) {
-    // 1. Society Roads and Lawn Tiles
-    for (let x = 0; x < width; x += 32) {
-      for (let y = 0; y < height; y += 32) {
-        if (y >= 380 && y <= 520) {
-          // Central asphalt road
-          this.add.image(x + 16, y + 16, 'tile_society_road');
-        } else {
-          // Society lawns & gardens
-          this.add.image(x + 16, y + 16, 'tile_lawn');
-        }
-      }
-    }
-
-    // 2. Perimeter Boundary Walls
-    for (let x = 0; x < width; x += 32) {
-      this.createWall(x + 16, 16);
-      this.createWall(x + 16, height - 16);
-    }
-    for (let y = 32; y < height - 32; y += 32) {
-      this.createWall(16, y + 16);
-      this.createWall(width - 16, y + 16);
-    }
-
-    // 3. Society Buildings / Decorative House Blocks
-    // Top Row Houses (Aunty Verma, Aunty Gupta, Sharma Ji's Outer Gate)
-    this.createBuildingBlock(180, 160, 220, 140, 'BUILDING A (VERMA NIWAS)');
-    this.createBuildingBlock(520, 160, 220, 140, 'BUILDING B (GUPTA MANSION)');
-    this.createBuildingBlock(860, 160, 260, 140, 'SHARMA JI FORTRESS (LOCKED)');
-
-    // Bottom Row Houses (Player Home Chintu's house, Vendor stalls)
-    this.playerHouseVisual = this.createBuildingBlock(520, 720, 260, 140, "CHINTU'S HOUSE (HOME)");
-    this.createBuildingBlock(180, 720, 220, 140, 'BUILDING C');
-    this.createBuildingBlock(900, 720, 240, 140, 'SOCIETY CLUBHOUSE');
-
-    // Player House Entrance Door
-    this.homeDoor = this.obstacles.create(520, 650, 'obj_door_locked');
-    this.homeDoor.setImmovable(true);
-    this.homeDoor.refreshBody();
-
-    // 4. Source 1: Aunties' Houses
-    // Aunty Verma Door (Building A)
-    this.setupAuntyHouse(180, 230, 'aunty_pink', 'AUNTY VERMA', [
-      {
-        speaker: 'AUNTY VERMA',
-        portrait: 'portrait_player', // Aunty
-        text: 'Arre Chintu beta! Happy Diwali! Yeh lo taaza Besan ke Laddoo khao!'
-      },
-      {
-        speaker: 'AUNTY VERMA',
-        portrait: 'portrait_player',
-        text: 'Beta, tumhare parents ko pata hai tum yahan akele ghoom rahe ho?'
-      },
-      {
-        speaker: 'CHINTU',
-        portrait: 'portrait_player',
-        text: 'Haan Aunty, society project ke liye survey kar raha hoon! Thank you!'
-      }
-    ], 3);
-
-    // Aunty Gupta Door (Building B)
-    this.setupAuntyHouse(520, 230, 'aunty_cyan', 'AUNTY GUPTA', [
-      {
-        speaker: 'AUNTY GUPTA',
-        portrait: 'portrait_player',
-        text: 'Chintu! Sharma Ji subah se round laga rahe hain, keh rahe hain cracker bursting banned hai!'
-      },
-      {
-        speaker: 'AUNTY GUPTA',
-        portrait: 'portrait_player',
-        text: 'Society rules ke according, laddoo distribution requires permission... par tum mere favorite ho, yeh lo Motichoor!'
-      }
-    ], 3);
-
-    // 5. Source 2: Society Sweet Vendors & Stalls
-    const stall1 = this.createObstacle(1150, 420, 'obj_stall', 60, 40);
-    this.setupVendor(1150, 460, 'HALWAI VENDOR', [
-      {
-        speaker: 'SWEET VENDOR',
-        portrait: 'portrait_shopkeeper',
-        text: 'Shuddh Desi Ghee ke laddoos! 2 box tumhare liye beta!'
-      }
-    ], 2);
-
-    // 6. Source 3: Laddoo Boxes scattered in society gardens & benches
-    this.createLaddooBoxPickup(340, 450, 2);
-    this.createLaddooBoxPickup(750, 430, 2);
-    this.createLaddooBoxPickup(1250, 220, 2);
-    this.createLaddooBoxPickup(340, 720, 2);
-    this.createLaddooBoxPickup(1250, 720, 2);
-
-    // Free individual laddoos
-    this.createLaddooPickup(100, 320);
-    this.createLaddooPickup(700, 320);
-    this.createLaddooPickup(1050, 580);
-
-    // Society Notice Boards & Rangolis
-    this.createObstacle(720, 240, 'obj_notice_board', 36, 30);
-    this.add.image(420, 450, 'obj_rangoli').setDisplaySize(48, 48);
-    this.add.image(960, 450, 'obj_rangoli').setDisplaySize(48, 48);
-
-    // Parked Scooters
-    this.createObstacle(360, 390, 'obj_scooter', 44, 30);
-    this.createObstacle(800, 490, 'obj_scooter', 44, 30);
-  }
-
-  createWall(x, y) {
-    const wall = this.obstacles.create(x, y, 'tile_wall_brick');
-    wall.setImmovable(true);
-    wall.refreshBody();
-    return wall;
-  }
-
-  createObstacle(x, y, texture, bodyW, bodyH) {
-    const obs = this.obstacles.create(x, y, texture);
-    obs.body.setSize(bodyW, bodyH);
-    obs.setImmovable(true);
-    obs.refreshBody();
-    return obs;
-  }
-
-  createBuildingBlock(x, y, w, h, label) {
-    const bg = this.add.graphics();
-    bg.fillStyle(0x3e2723, 1);
-    bg.fillRect(x - w / 2, y - h / 2, w, h);
-    bg.fillStyle(0xd7ccc8, 1);
-    bg.fillRect(x - w / 2 + 4, y - h / 2 + 4, w - 8, h - 8);
-    bg.lineStyle(3, 0xff9933, 0.8);
-    bg.strokeRect(x - w / 2, y - h / 2, w, h);
-
-    const txt = this.add.text(x, y - 20, label, {
-      fontFamily: "'Outfit', sans-serif",
-      fontSize: '12px',
-      fontStyle: 'bold',
-      color: '#3e2723'
-    }).setOrigin(0.5);
-
-    // Physics collider for building
-    const collider = this.obstacles.create(x, y, null);
-    collider.setSize(w, h);
-    collider.setVisible(false);
-    collider.setImmovable(true);
-    collider.refreshBody();
-
-    return collider;
-  }
-
   setupAuntyHouse(x, y, spriteKey, auntyName, script, laddooReward) {
-    this.add.image(x, y, spriteKey);
+    this.add.image(x, y, spriteKey).setDepth(20);
     let visited = false;
 
     this.interactables.push({
@@ -267,43 +175,21 @@ export class SocietyScene extends Phaser.Scene {
     });
   }
 
-  createLaddooBoxPickup(x, y, amount) {
-    const box = this.physics.add.image(x, y, 'item_laddoo_box').setDisplaySize(26, 22);
-    this.physics.add.overlap(this.player, box, () => {
-      soundManager.playLaddooPickup();
-      inventory.addLaddoo(amount);
-      this.hud.showPopupMessage(`+${amount} LADDOO BOX!`, '#ffd700');
-      this.updateObjectiveText();
-      this.hud.updateHUD();
-      box.destroy();
-    });
-  }
-
-  createLaddooPickup(x, y) {
-    const laddoo = this.physics.add.image(x, y, 'item_laddoo').setDisplaySize(20, 20);
-    this.physics.add.overlap(this.player, laddoo, () => {
-      soundManager.playLaddooPickup();
-      inventory.addLaddoo(1);
-      this.hud.showPopupMessage('+1 LADDOO!', '#ffd700');
-      this.updateObjectiveText();
-      this.hud.updateHUD();
-      laddoo.destroy();
-    });
-  }
-
   unlockPlayerHome() {
     if (this.homeUnlocked) return;
     this.homeUnlocked = true;
     soundManager.playUnlockDoor();
 
-    this.homeDoor.setTexture('obj_door_open');
-    this.tweens.add({
-      targets: this.homeDoor,
-      alpha: 0.5,
-      duration: 500,
-      yoyo: true,
-      repeat: -1
-    });
+    if (this.homeDoor) {
+      this.homeDoor.setTexture('obj_door_open');
+      this.tweens.add({
+        targets: this.homeDoor,
+        alpha: 0.5,
+        duration: 500,
+        yoyo: true,
+        repeat: -1
+      });
+    }
 
     this.hud.showPopupMessage("YOUR HOME UNLOCKED! ENTER WITH 'E'!", '#76ff03', 3500);
 
@@ -334,7 +220,7 @@ export class SocietyScene extends Phaser.Scene {
   checkInteractions() {
     for (const item of this.interactables) {
       const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, item.x, item.y);
-      if (dist <= item.radius) {
+      if (dist <= item.radius && item.action) {
         item.action();
         return;
       }

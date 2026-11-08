@@ -1,7 +1,4 @@
-// BossScene.js - Level 5: Sharma Ji's Fortress (Boss Encounter)
-// Sharma Ji is strictly confined to the central aangan.
-// Player can seek refuge in side rooms to heal and plan.
-// 15 Sutli bombs distract Sharma Ji while player triggers 3 mandatory environmental objectives in any order.
+// BossScene.js - Level 5: Sharma Ji's Fortress (Data-Driven via MapLoader)
 import { Player } from '../entities/Player.js';
 import { SharmaJi } from '../entities/SharmaJi.js';
 import { HUD } from '../ui/HUD.js';
@@ -10,6 +7,8 @@ import { soundManager } from '../systems/SoundSystem.js';
 import { SaveManager } from '../systems/SaveManager.js';
 import { globalTimer } from '../systems/TimerManager.js';
 import { inventory } from '../systems/InventoryManager.js';
+import { MapLoader } from '../maps/MapLoader.js';
+import { BossMapData } from '../maps/data/BossMapData.js';
 
 export class BossScene extends Phaser.Scene {
   constructor() {
@@ -17,18 +16,17 @@ export class BossScene extends Phaser.Scene {
   }
 
   create() {
-    const mapWidth = 1200;
-    const mapHeight = 840;
-
-    this.physics.world.setBounds(0, 0, mapWidth, mapHeight);
-    this.cameras.main.setBounds(0, 0, mapWidth, mapHeight);
-
     soundManager.playMusic('boss');
 
-    this.walls = this.physics.add.staticGroup();
+    // 1. Load Data-Driven Map
+    const loader = new MapLoader(this);
+    this.mapInstance = loader.loadMap(BossMapData);
+    this.walls = this.mapInstance.collisionGroup;
+    this.interactables = this.mapInstance.interactables;
+    this.aanganRect = this.mapInstance.aanganRect || new Phaser.Geom.Rectangle(380, 220, 440, 400);
+
     this.projectiles = this.physics.add.group();
     this.bossProjectiles = this.physics.add.group();
-    this.interactables = [];
 
     // Environmental Objectives State
     this.objectives = {
@@ -37,31 +35,51 @@ export class BossScene extends Phaser.Scene {
       grandFinale: false    // Objective C
     };
 
-    // Central Aangan bounds: strictly for Sharma Ji!
-    // x: 380 to 820, y: 220 to 620
-    this.aanganRect = new Phaser.Geom.Rectangle(380, 220, 440, 400);
+    // Safe Room Room Text Labels
+    this.add.text(200, 240, 'SOCIETY OFFICE\n(SAFE ROOM)', {
+      fontFamily: "'Outfit', sans-serif",
+      fontSize: '13px',
+      fontStyle: 'bold',
+      color: '#4caf50',
+      align: 'center'
+    }).setOrigin(0.5);
 
-    this.buildFortress(mapWidth, mapHeight);
+    this.add.text(1000, 240, 'VERANDAH\n(SAFE ROOM)', {
+      fontFamily: "'Outfit', sans-serif",
+      fontSize: '13px',
+      fontStyle: 'bold',
+      color: '#4caf50',
+      align: 'center'
+    }).setOrigin(0.5);
 
-    // Spawn Player in the Entrance Vestibule (Safe side room at bottom)
-    this.player = new Player(this, 600, 750);
+    this.add.text(600, 100, 'TERRACE BATTERY\n(SAFE ROOM)', {
+      fontFamily: "'Outfit', sans-serif",
+      fontSize: '13px',
+      fontStyle: 'bold',
+      color: '#4caf50',
+      align: 'center'
+    }).setOrigin(0.5);
+
+    // 2. Spawn Player
+    const spawn = this.mapInstance.playerSpawn;
+    this.player = new Player(this, spawn.x, spawn.y);
     this.cameras.main.startFollow(this.player, true, 0.08, 0.08);
 
-    // Spawn Sharma Ji in the central Aangan
+    // 3. Spawn Sharma Ji in central Aangan
     this.boss = new SharmaJi(this, 600, 400, this.aanganRect);
 
-    // Collisions
+    // 4. Collisions
     this.physics.add.collider(this.player, this.walls);
     this.physics.add.collider(this.boss, this.walls);
 
-    // Player takes damage if physically caught by Sharma Ji (unless he is stunned!)
+    // Physical damage if caught by Sharma Ji (unless stunned)
     this.physics.add.overlap(this.player, this.boss, () => {
       if (!this.boss.isStunned && !this.player.isInvulnerable) {
         this.damagePlayer('Sharma Ji slapped you with the 2026 Society Bye-Laws!');
       }
     });
 
-    // Boss projectiles (Rulebook flyers) hitting player
+    // Boss rule flyers hitting player
     this.physics.add.overlap(this.player, this.bossProjectiles, (player, proj) => {
       proj.destroy();
       if (!this.player.isInvulnerable) {
@@ -82,7 +100,18 @@ export class BossScene extends Phaser.Scene {
       bomb.destroy();
     });
 
-    // Setup Phooljhadi (Kidnapped Mascot) tied at the back of the aangan
+    // Collectibles in safe rooms
+    this.mapInstance.collectibleSprites.forEach(item => {
+      this.physics.add.overlap(this.player, item, () => {
+        soundManager.playLaddooPickup();
+        inventory.addLaddoo(item.collectibleCount || 1);
+        this.hud.showPopupMessage('+1 LADDOO!', '#ffd700');
+        this.hud.updateHUD();
+        item.destroy();
+      });
+    });
+
+    // 5. Setup Phooljhadi Mascot
     this.phooljhadi = this.add.image(600, 240, 'phooljhadi').setDepth(25);
     this.tweens.add({
       targets: this.phooljhadi,
@@ -92,158 +121,30 @@ export class BossScene extends Phaser.Scene {
       repeat: -1
     });
 
+    // 6. Wire Objectives Action Callbacks
+    this.interactables.forEach(item => {
+      if (item.actionType === 'objective_a') {
+        item.action = () => this.activateObjectiveA();
+      } else if (item.actionType === 'objective_b') {
+        item.action = () => this.activateObjectiveB();
+      } else if (item.actionType === 'objective_c') {
+        item.action = () => this.activateObjectiveC();
+      }
+    });
+
+    // 7. HUD & Dialogue Manager
     this.hud = new HUD(this);
     this.dialogue = new DialogueManager(this);
     this.updateBossObjectiveText();
 
-    // Interaction key
     this.input.keyboard.on('keydown-E', () => {
       if (!this.dialogue.isActive()) {
         this.checkInteractions();
       }
     });
 
-    // Opening warning
     this.time.delayedCall(800, () => {
       this.hud.showPopupMessage('SAFE IN SIDE ROOMS! Distract Sharma Ji with bombs to trigger objectives!', '#ffd700', 4500);
-    });
-  }
-
-  buildFortress(width, height) {
-    // 1. Flooring
-    for (let x = 0; x < width; x += 32) {
-      for (let y = 0; y < height; y += 32) {
-        if (this.aanganRect.contains(x + 16, y + 16)) {
-          // Central Aangan: Terracotta ornamental courtyard tiles
-          this.add.image(x + 16, y + 16, 'tile_aangan');
-        } else {
-          // Surrounding Interior rooms: Polished marble floor
-          this.add.image(x + 16, y + 16, 'tile_marble');
-        }
-      }
-    }
-
-    // 2. Exterior Perimeter Walls
-    for (let x = 0; x < width; x += 32) {
-      this.createWall(x + 16, 16);
-      this.createWall(x + 16, height - 16);
-    }
-    for (let y = 32; y < height - 32; y += 32) {
-      this.createWall(16, y + 16);
-      this.createWall(width - 16, y + 16);
-    }
-
-    // 3. Aangan Boundaries (Pillars & Archways separating courtyard from interior rooms)
-    // The player can freely walk between rooms and courtyard, but Sharma Ji is clamped to the courtyard!
-    // Top boundary of Aangan (with gap for Phooljhadi viewing)
-    for (let x = 380; x <= 820; x += 32) {
-      if (x < 560 || x > 640) {
-        this.createWall(x, 210, 'tile_wall_fortress');
-      }
-    }
-    // Bottom boundary of Aangan (with archway entrance)
-    for (let x = 380; x <= 820; x += 32) {
-      if (x < 540 || x > 660) {
-        this.createWall(x, 630, 'tile_wall_fortress');
-      }
-    }
-    // Left boundary of Aangan (with doorway into Left Safe Study)
-    for (let y = 220; y <= 620; y += 32) {
-      if (y < 380 || y > 460) {
-        this.createWall(370, y, 'tile_wall_fortress');
-      }
-    }
-    // Right boundary of Aangan (with doorway into Right Safe Verandah)
-    for (let y = 220; y <= 620; y += 32) {
-      if (y < 380 || y > 460) {
-        this.createWall(830, y, 'tile_wall_fortress');
-      }
-    }
-
-    // 4. Safe Side Rooms Layout
-    // Left Safe Room: Society Committee Office / Study (Houses Objective B: Society Announcement)
-    this.add.text(200, 240, 'SOCIETY OFFICE\n(SAFE ROOM)', {
-      fontFamily: "'Outfit', sans-serif",
-      fontSize: '13px',
-      fontStyle: 'bold',
-      color: '#4caf50',
-      align: 'center'
-    }).setOrigin(0.5);
-
-    // Right Safe Room: Verandah & Store (Houses Objective A: Decoration Disaster)
-    this.add.text(1000, 240, 'VERANDAH\n(SAFE ROOM)', {
-      fontFamily: "'Outfit', sans-serif",
-      fontSize: '13px',
-      fontStyle: 'bold',
-      color: '#4caf50',
-      align: 'center'
-    }).setOrigin(0.5);
-
-    // North Safe Room: Terrace Entrance (Houses Objective C: Grand Finale)
-    this.add.text(600, 100, 'TERRACE BATTERY\n(SAFE ROOM)', {
-      fontFamily: "'Outfit', sans-serif",
-      fontSize: '13px',
-      fontStyle: 'bold',
-      color: '#4caf50',
-      align: 'center'
-    }).setOrigin(0.5);
-
-    // 5. Environmental Objective Props
-    // OBJECTIVE A: Decoration Disaster (Overload festive light power console in Verandah)
-    this.objA_sprite = this.add.image(1020, 360, 'obj_boss_decor').setDisplaySize(48, 48);
-    this.interactables.push({
-      x: 1020,
-      y: 360,
-      radius: 60,
-      prompt: '[E] Trigger Decoration Disaster',
-      action: () => this.activateObjectiveA()
-    });
-
-    // OBJECTIVE B: Society Announcement (Sabotage Public Address console in Office)
-    this.objB_sprite = this.add.image(180, 360, 'obj_boss_speaker').setDisplaySize(48, 48);
-    this.interactables.push({
-      x: 180,
-      y: 360,
-      radius: 60,
-      prompt: '[E] Broadcast Society Announcement Feedback',
-      action: () => this.activateObjectiveB()
-    });
-
-    // OBJECTIVE C: Grand Finale (Ignite aerial fireworks battery on Terrace)
-    this.objC_sprite = this.add.image(600, 140, 'obj_boss_finale').setDisplaySize(48, 48);
-    this.interactables.push({
-      x: 600,
-      y: 140,
-      radius: 60,
-      prompt: '[E] Launch Grand Finale Cracker Battery',
-      action: () => this.activateObjectiveC()
-    });
-
-    // Safety Furniture / Sofas in Safe Rooms
-    this.createWall(200, 480, 'obj_sofa');
-    this.createWall(1000, 480, 'obj_sofa');
-
-    // Free Laddoos in Safe Rooms for emergency healing
-    this.createLaddooPickup(140, 240);
-    this.createLaddooPickup(1060, 240);
-    this.createLaddooPickup(460, 750);
-  }
-
-  createWall(x, y, texture = 'tile_wall_interior') {
-    const wall = this.walls.create(x, y, texture);
-    wall.setImmovable(true);
-    wall.refreshBody();
-    return wall;
-  }
-
-  createLaddooPickup(x, y) {
-    const laddoo = this.physics.add.image(x, y, 'item_laddoo').setDisplaySize(20, 20);
-    this.physics.add.overlap(this.player, laddoo, () => {
-      soundManager.playLaddooPickup();
-      inventory.addLaddoo(1);
-      this.hud.showPopupMessage('+1 LADDOO!', '#ffd700');
-      this.hud.updateHUD();
-      laddoo.destroy();
     });
   }
 
@@ -253,10 +154,8 @@ export class BossScene extends Phaser.Scene {
     const speed = 280;
     bomb.setVelocity(Math.cos(angle) * speed, Math.sin(angle) * speed);
 
-    // Auto-explode after 1.2s if no direct hit
     this.time.delayedCall(1200, () => {
       if (bomb.active) {
-        // Area stun check
         const distToBoss = Phaser.Math.Distance.Between(bomb.x, bomb.y, this.boss.x, this.boss.y);
         if (distToBoss < 85) {
           this.boss.hitByBomb();
@@ -284,7 +183,6 @@ export class BossScene extends Phaser.Scene {
     this.hud.showPopupMessage(reason, '#ff1744', 2500);
     this.hud.updateHUD();
 
-    // Damage flash & knockback
     this.tweens.add({
       targets: this.player,
       alpha: 0.3,
@@ -313,13 +211,11 @@ export class BossScene extends Phaser.Scene {
         text: 'NO ONE DEFIES THE SOCIETY PRESIDENT! I told you Diwali celebrations are strictly regulated!'
       }
     ], () => {
-      // Restart boss fight with full health (Timer continues!)
       inventory.heal(4);
       this.scene.restart();
     });
   }
 
-  // --- OBJECTIVE A: DECORATION DISASTER ---
   activateObjectiveA() {
     if (this.objectives.decorDisaster) {
       this.hud.showPopupMessage('Decoration Disaster already triggered!');
@@ -329,7 +225,6 @@ export class BossScene extends Phaser.Scene {
     this.objectives.decorDisaster = true;
     soundManager.playObjectiveComplete();
 
-    // Visual Chandelier / Lights electrical short effect
     for (let i = 0; i < 8; i++) {
       const spark = this.add.image(600 + Phaser.Math.Between(-80, 80), 380 + Phaser.Math.Between(-60, 60), 'fx_sparkle')
         .setDisplaySize(32, 32);
@@ -348,7 +243,6 @@ export class BossScene extends Phaser.Scene {
     this.updateBossObjectiveText();
   }
 
-  // --- OBJECTIVE B: SOCIETY ANNOUNCEMENT ---
   activateObjectiveB() {
     if (this.objectives.announcement) {
       this.hud.showPopupMessage('Announcement feedback already broadcasted!');
@@ -358,7 +252,6 @@ export class BossScene extends Phaser.Scene {
     this.objectives.announcement = true;
     soundManager.playObjectiveComplete();
 
-    // Sonic shockwave animation
     const ring = this.add.image(600, 400, 'fx_shockwave').setDisplaySize(40, 40);
     this.tweens.add({
       targets: ring,
@@ -374,7 +267,6 @@ export class BossScene extends Phaser.Scene {
     this.updateBossObjectiveText();
   }
 
-  // --- OBJECTIVE C: GRAND FINALE ---
   activateObjectiveC() {
     if (this.objectives.grandFinale) {
       this.hud.showPopupMessage('Grand Finale battery already ignited!');
@@ -384,7 +276,6 @@ export class BossScene extends Phaser.Scene {
     this.objectives.grandFinale = true;
     soundManager.playObjectiveComplete();
 
-    // Aerial rockets explosion shower
     for (let i = 0; i < 15; i++) {
       this.time.delayedCall(i * 120, () => {
         soundManager.playBombExplosion();
@@ -418,10 +309,8 @@ export class BossScene extends Phaser.Scene {
     this.player.canMove = false;
     this.player.setVelocity(0, 0);
 
-    // Clear saved checkpoint
     SaveManager.clearSave();
 
-    // Final dialogue with defeated Sharma Ji
     this.dialogue.startDialogue([
       {
         speaker: 'SHARMA JI',
@@ -434,7 +323,6 @@ export class BossScene extends Phaser.Scene {
         text: 'And I rescued Phooljhadi! Happy Diwali, Uncle!'
       }
     ], () => {
-      // Transition to final victory credits sequence
       this.cameras.main.fade(800, 0, 0, 0, false, (cam, progress) => {
         if (progress === 1) {
           this.scene.start('CreditsScene');
@@ -446,7 +334,7 @@ export class BossScene extends Phaser.Scene {
   checkInteractions() {
     for (const item of this.interactables) {
       const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, item.x, item.y);
-      if (dist <= item.radius) {
+      if (dist <= item.radius && item.action) {
         item.action();
         return;
       }
